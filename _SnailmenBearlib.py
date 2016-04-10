@@ -2,6 +2,7 @@
 # Up to section "Using Items"
 # http://www.roguebasin.com/index.php?title=Complete_Roguelike_Tutorial,_using_python%2Blibtcod,_part_8
 # BGRA/ARGB conversion: 0xAARRGGBB @ http://www.binaryhexconverter.com/decimal-to-hex-converter
+# Note: add
 
 #import
 import PyBearLibTerminal as terminal
@@ -22,7 +23,7 @@ MAP_HEIGHT = 43
 ROOM_MAX_SIZE = 10
 ROOM_MIN_SIZE = 6
 MAX_ROOMS = 30
-MAX_ROOM_MONSTERS = 0
+#MAX_ROOM_MONSTERS = 0
 MAX_ROOM_ITEMS = 2
 MONSTER_SMELL_RANGE = 30
 
@@ -274,7 +275,7 @@ def place_objects(room):
     item_chances['shield'] = from_dungeon_level([[5,1],[10,2],[15,3]])
 
     #choose random number of monsters
-    num_monsters = libtcod.random_get_int(0, 0, MAX_ROOM_MONSTERS)
+    num_monsters = libtcod.random_get_int(0, 0, max_monsters)
     for i in range(num_monsters):
         #choose random spot for this monster
         x = libtcod.random_get_int(0, room.x1+1, room.x2-1)
@@ -287,7 +288,7 @@ def place_objects(room):
                 #create an snailman
                 fighter_component = Fighter(hp=10, defense=1, power=9, xp=100, death_function=monster_death)
                 ai_component = BasicMonster()
-                monster = Object(x, y, 160, 'snailman', blocks=True, fighter=fighter_component, ai=ai_component)
+                monster = Object(x, y, 169, 'snailman', blocks=True, fighter=fighter_component, ai=ai_component)
             elif choice == 'slime': #30% chance of an orc
                 #create an slime
                 fighter_component = Fighter(hp=6, defense=1, power=4, xp=55, death_function=monster_death)
@@ -297,11 +298,11 @@ def place_objects(room):
                 #create a snake
                 fighter_component = Fighter(hp=2, defense=0, power=6, xp=35, death_function=monster_death)
                 ai_component = BasicMonster()
-                monster = Object(x, y, 161, 'snake', blocks=True, fighter=fighter_component, ai=ai_component)
+                monster = Object(x, y, 145, 'snake', blocks=True, fighter=fighter_component, ai=ai_component)
             objects.append(monster)
 
     #choose random number of items
-    num_items = libtcod.random_get_int(0, 0, MAX_ROOM_ITEMS)
+    num_items = libtcod.random_get_int(0, 0, max_items)
     for i in range(num_items):
         #choose random spot for this item
         x = libtcod.random_get_int(0, room.x1+1, room.x2-1)
@@ -329,11 +330,11 @@ def place_objects(room):
             elif choice == 'sword':
                 #create a sword
                 equipment_component = Equipment(slot='right hand', power_bonus=3)
-                item = Object(x, y, '/', 'sword of might', equipment=equipment_component)
+                item = Object(x, y, 25, 'sword of might', equipment=equipment_component)
             elif choice == 'shield':
                 #create a shield
                 equipment_component = Equipment(slot='left hand', defense_bonus=1)
-                item = Object(x, y, '[', 'shield', equipment=equipment_component)
+                item = Object(x, y, 134, 'shield', equipment=equipment_component)
             else:
                 #create 'fireball' scroll
                 item_component = Item(use_function=cast_fireball)
@@ -461,7 +462,7 @@ def cast_blizzard():
         if damage:
             message('The frosty beam zaps the ' + monster.name + ' for ' + str(damage) + ' hp!', 4282384191)
         else:
-            message('The frosty beam misses the ' + monster.name + '!', libtcod.red)
+            message('The frosty beam misses the ' + monster.name + '!', 4294901760)
         monster.fighter.take_damage(damage)
 
 def cast_fireball():
@@ -642,10 +643,17 @@ def check_level_up():
         if choice == 0:
             player.fighter.base_max_hp += 20
             player.fighter.hp += 20
+
         elif choice == 1:
             player.fighter.base_power += 1
+
         elif choice == 2:
             player.fighter.base_defense += 1
+
+        #clear level menu before refresh
+        terminal.layer(6)
+        terminal.clear_area(0, 0, MAP_WIDTH, MAP_HEIGHT)
+
 
 def is_blocked(x, y):
     #first test the map tile
@@ -1060,11 +1068,9 @@ def handle_keys():
 
             if key == terminal.TK_SHIFT:
                 key = terminal.read()
-                if key == terminal.TK_PERIOD:
-                    print 'done'
-                #go down stairs, if the player is on them
-                if stairs.x == player.x and stairs.y == player.y:
-                    next_level()
+                if key == terminal.TK_PERIOD and stairs.x == player.x and stairs.y == player.y:
+                    #go down stairs, if the player is on them
+                        next_level()
 
             if key == terminal.TK_BACKSPACE:
                 debug()
@@ -1184,7 +1190,7 @@ def main_menu():
         #show the game's title and some credits
         terminal.layer(6)
         terminal.color(4294967103)
-        terminal.print_(SCREEN_WIDTH/2 - 13, SCREEN_HEIGHT/2-4, 'TOMBS OF THE ANCIENT KINGS')
+        terminal.print_(SCREEN_WIDTH/2 - 10, SCREEN_HEIGHT/2-4, 'CAVES OF THE SNAILMEN')
         terminal.print_(SCREEN_WIDTH/2, SCREEN_HEIGHT-2, 'By Tommy Z')
 
         #show options and wait for player's choice
@@ -1202,6 +1208,7 @@ def main_menu():
                 continue
             play_game()
         elif choice == 2:  #quit
+
             terminal.close()
             break
 
@@ -1227,7 +1234,7 @@ def debug():
 terminal.open()
 
 # !! set this \/ for ng
-terminal.set("window: size=80x50; window.title='hello world'; font: tilesets/NEW16_4.png, size=16x16; input: filter=[keyboard, mouse_left]")
+terminal.set("window: size=80x50; window.title='Caves of the Snailmen'; font: tilesets/tiles.png, size=16x16; input: filter=[keyboard, mouse_left]")
 
 
 #############################
