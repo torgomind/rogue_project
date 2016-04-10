@@ -2,7 +2,7 @@
 
 Rogue-like game written with Python 2.7, using Libtcod and BearLibTerminal libraries. Work in progress. Created with Pycharm.
 
-<b>Features:</b?
+<b>Features:</b>
 <ul>
 <li>Custom pathfinding</li>
 <li>Full colour tiles 16x16</li>
