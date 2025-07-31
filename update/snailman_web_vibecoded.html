@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Caves of the Snailmen</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background: #000;
+            color: #fff;
+            font-family: 'Courier New', monospace;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        
+        #gameContainer {
+            border: 2px solid #444;
+            background: #000;
+        }
+        
+        canvas {
+            display: block;
+            background: #000;
+        }
+        
+        #controls {
+            margin-top: 20px;
+            text-align: center;
+            color: #ccc;
+        }
+        
+        .key {
+            background: #333;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <h1>CAVES OF THE SNAILMEN</h1>
+    <div id="gameContainer">
+        <canvas id="gameCanvas" width="800" height="600"></canvas>
+    </div>
+    
+    <div id="controls">
+        <p><strong>Controls:</strong> <span class="key">Arrow Keys</span> - Move | <span class="key">Space</span> - Wait | <span class="key">G</span> - Get Item | <span class="key">I</span> - Inventory</p>
+        <p id="status">Use arrow keys to move around the dungeon!</p>
+    </div>
+
+    <script>
+        // Simple constants
+        const TILE_SIZE = 20;
+        const MAP_WIDTH = 40;
+        const MAP_HEIGHT = 25;
+        
+        // Game variables
+        let canvas, ctx;
+        let player = { x: 10, y: 10, hp: 30, maxHp: 30, level: 1, xp: 0 };
+        let gameMap = [];
+        let objects = [];
+        let inventory = [];
+        let messages = [];
+        let gameState = 'playing';
+        
+        // Colors
+        const colors = {
+            player: '#ffff00',
+            wall: '#666666',
+            floor: '#333333',
+            monster: '#ff0000',
+            item: '#00ff00',
+            text: '#ffffff'
+        };
+        
+        // Simple map generation
+                // Corrected map generation
+        function createMap() {
+            // Initialize the map with all walls
+            for (let x = 0; x < MAP_WIDTH; x++) {
+                gameMap[x] = [];
+                for (let y = 0; y < MAP_HEIGHT; y++) {
+                    gameMap[x][y] = { 
+                        wall: true,
+                        explored: false
+                    };
+                }
+            }
+            
+            let previousRoom = null;
+
+            // Create some rooms
+            for (let i = 0; i < 10; i++) { // Increased room count for a more complex dungeon
+                let roomW = Math.floor(Math.random() * 6) + 4;
+                let roomH = Math.floor(Math.random() * 4) + 3;
+                let roomX = Math.floor(Math.random() * (MAP_WIDTH - roomW - 2)) + 1;
+                let roomY = Math.floor(Math.random() * (MAP_HEIGHT - roomH - 2)) + 1;
+                
+                // Carve out the room
+                for (let x = roomX; x < roomX + roomW; x++) {
+                    for (let y = roomY; y < roomY + roomH; y++) {
+                        gameMap[x][y].wall = false;
+                    }
+                }
+                
+                let newRoom = { x: roomX + Math.floor(roomW / 2), y: roomY + Math.floor(roomH / 2) };
+
+                // If this isn't the first room, connect it to the previous one
+                if (previousRoom) {
+                    let prevX = previousRoom.x;
+                    let prevY = previousRoom.y;
+                    let newX = newRoom.x;
+                    let newY = newRoom.y;
+
+                    // Carve a horizontal corridor
+                    for (let x = Math.min(prevX, newX); x <= Math.max(prevX, newX); x++) {
+                        gameMap[x][prevY].wall = false;
+                    }
+                    // Carve a vertical corridor
+                    for (let y = Math.min(prevY, newY); y <= Math.max(prevY, newY); y++) {
+                        gameMap[newX][y].wall = false;
+                    }
+                }
+                
+                // Add some monsters and items to the current room
+                if (i > 0) { // Don't place monsters/items in the first room
+                    // Add monster
+                    let mx = roomX + Math.floor(Math.random() * roomW);
+                    let my = roomY + Math.floor(Math.random() * roomH);
+                    if (!getObjectAt(mx, my)) { // Check if an object is already there
+                        objects.push({
+                            x: mx, y: my, 
+                            type: 'monster', 
+                            char: 's', 
+                            name: 'snake',
+                            hp: 5,
+                            maxHp: 5,
+                            attack: 3
+                        });
+                    }
+                    
+                    // Add item
+                    let ix = roomX + Math.floor(Math.random() * roomW);
+                    let iy = roomY + Math.floor(Math.random() * roomH);
+                    if (!getObjectAt(ix, iy)) {
+                        objects.push({
+                            x: ix, y: iy,
+                            type: 'item',
+                            char: '!',
+                            name: 'healing potion',
+                            healAmount: 10
+                        });
+                    }
+                }
+
+                previousRoom = newRoom;
+            }
+        }
+        
+        function getObjectAt(x, y) {
+            return objects.find(obj => obj.x === x && obj.y === y);
+        }
+        
+        function isBlocked(x, y) {
+            if (x < 0 || x >= MAP_WIDTH || y < 0 || y >= MAP_HEIGHT) return true;
+            if (gameMap[x][y].wall) return true;
+            return objects.some(obj => obj.type === 'monster' && obj.x === x && obj.y === y);
+        }
+        
+        function movePlayer(dx, dy) {
+            let newX = player.x + dx;
+            let newY = player.y + dy;
+            
+            // Check for monster to attack
+            let target = objects.find(obj => obj.type === 'monster' && obj.x === newX && obj.y === newY);
+            if (target) {
+                // Attack!
+                let damage = Math.floor(Math.random() * 5) + 3;
+                target.hp -= damage;
+                addMessage(`You hit the ${target.name} for ${damage} damage!`);
+                
+                if (target.hp <= 0) {
+                    addMessage(`The ${target.name} dies!`);
+                    objects.splice(objects.indexOf(target), 1);
+                    player.xp += 10;
+                } else {
+                    // Monster attacks back
+                    let monsterDamage = Math.floor(Math.random() * 3) + 1;
+                    player.hp -= monsterDamage;
+                    addMessage(`The ${target.name} hits you for ${monsterDamage} damage!`);
+                    
+                    if (player.hp <= 0) {
+                        addMessage("You died! Refresh to restart.");
+                        gameState = 'dead';
+                    }
+                }
+                return;
+            }
+            
+            // Normal movement
+            if (!isBlocked(newX, newY)) {
+                player.x = newX;
+                player.y = newY;
+                gameMap[newX][newY].explored = true;
+                
+                // Check for items
+                let item = objects.find(obj => obj.type === 'item' && obj.x === newX && obj.y === newY);
+                if (item) {
+                    addMessage(`You see a ${item.name} here. Press G to pick it up.`);
+                }
+            }
+        }
+        
+        function pickupItem() {
+            let item = objects.find(obj => obj.type === 'item' && obj.x === player.x && obj.y === player.y);
+            if (item) {
+                inventory.push(item);
+                objects.splice(objects.indexOf(item), 1);
+                addMessage(`You picked up a ${item.name}!`);
+            } else {
+                addMessage("There's nothing here to pick up.");
+            }
+        }
+        
+        function useItem() {
+            if (inventory.length === 0) {
+                addMessage("Your inventory is empty!");
+                return;
+            }
+            
+            let item = inventory[0]; // Use first item for simplicity
+            if (item.healAmount) {
+                player.hp = Math.min(player.maxHp, player.hp + item.healAmount);
+                addMessage(`You drink the ${item.name} and heal ${item.healAmount} HP!`);
+                inventory.splice(0, 1);
+            }
+        }
+        
+        function addMessage(text) {
+            messages.push(text);
+            if (messages.length > 5) {
+                messages.shift();
+            }
+            document.getElementById('status').textContent = text;
+        }
+        
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw map
+            for (let x = 0; x < MAP_WIDTH; x++) {
+                for (let y = 0; y < MAP_HEIGHT; y++) {
+                    let tile = gameMap[x][y];
+                    if (Math.abs(x - player.x) <= 5 && Math.abs(y - player.y) <= 5) {
+                        tile.explored = true;
+                        if (tile.wall) {
+                            ctx.fillStyle = colors.wall;
+                            ctx.fillRect(x * TILE_SIZE, y * TILE_SIZE, TILE_SIZE, TILE_SIZE);
+                        } else {
+                            ctx.fillStyle = colors.floor;
+                            ctx.fillRect(x * TILE_SIZE, y * TILE_SIZE, TILE_SIZE, TILE_SIZE);
+                        }
+                    } else if (tile.explored) {
+                        // Draw darker for explored but not visible
+                        if (tile.wall) {
+                            ctx.fillStyle = '#333333';
+                            ctx.fillRect(x * TILE_SIZE, y * TILE_SIZE, TILE_SIZE, TILE_SIZE);
+                        } else {
+                            ctx.fillStyle = '#1a1a1a';
+                            ctx.fillRect(x * TILE_SIZE, y * TILE_SIZE, TILE_SIZE, TILE_SIZE);
+                        }
+                    }
+                }
+            }
+            
+            // Draw objects (monsters, items)
+            for (let obj of objects) {
+                if (Math.abs(obj.x - player.x) <= 5 && Math.abs(obj.y - player.y) <= 5) {
+                    ctx.fillStyle = obj.type === 'monster' ? colors.monster : colors.item;
+                    ctx.font = '16px monospace';
+                    ctx.fillText(obj.char, obj.x * TILE_SIZE + 2, obj.y * TILE_SIZE + 16);
+                }
+            }
+            
+            // Draw player
+            ctx.fillStyle = colors.player;
+            ctx.font = '16px monospace';
+            ctx.fillText('@', player.x * TILE_SIZE + 2, player.y * TILE_SIZE + 16);
+            
+            // Draw UI
+            ctx.fillStyle = colors.text;
+            ctx.font = '12px monospace';
+            ctx.fillText(`HP: ${player.hp}/${player.maxHp}  XP: ${player.xp}  Level: ${player.level}`, 10, canvas.height - 60);
+            ctx.fillText(`Inventory: ${inventory.length} items`, 10, canvas.height - 40);
+            
+            // Draw messages
+            for (let i = 0; i < messages.length; i++) {
+                ctx.fillText(messages[i], 10, canvas.height - 20 + (i * 12));
+            }
+        }
+        
+        function handleKeyPress(event) {
+            if (gameState === 'dead') return;
+            
+            switch(event.key) {
+                case 'ArrowUp':
+                    movePlayer(0, -1);
+                    break;
+                case 'ArrowDown':
+                    movePlayer(0, 1);
+                    break;
+                case 'ArrowLeft':
+                    movePlayer(-1, 0);
+                    break;
+                case 'ArrowRight':
+                    movePlayer(1, 0);
+                    break;
+                case ' ':
+                    addMessage("You wait.");
+                    break;
+                case 'g':
+                case 'G':
+                    pickupItem();
+                    break;
+                case 'i':
+                case 'I':
+                    if (inventory.length > 0) {
+                        useItem();
+                    } else {
+                        addMessage("Your inventory is empty!");
+                    }
+                    break;
+            }
+            
+            draw();
+        }
+        
+        function gameLoop() {
+            draw();
+            requestAnimationFrame(gameLoop);
+        }
+        
+        function init() {
+            canvas = document.getElementById('gameCanvas');
+            ctx = canvas.getContext('2d');
+            
+            createMap();
+            
+            // Find a good starting position
+            for (let x = 1; x < MAP_WIDTH-1; x++) {
+                for (let y = 1; y < MAP_HEIGHT-1; y++) {
+                    if (!gameMap[x][y].wall) {
+                        player.x = x;
+                        player.y = y;
+                        gameMap[x][y].explored = true;
+                        break;
+                    }
+                }
+                if (!gameMap[player.x][player.y].wall) break;
+            }
+            
+            document.addEventListener('keydown', handleKeyPress);
+            
+            addMessage("Welcome to the Caves of the Snailmen! Use arrow keys to move.");
+            gameLoop();
+        }
+        
+        window.addEventListener('load', init);
+    </script>
+</body>
+</html>
