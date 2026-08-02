@@ -1,0 +1,1459 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Caves of the Snailmen</title>
+<style>
+	* { margin: 0; padding: 0; box-sizing: border-box; }
+	html, body {
+		width: 100%; height: 100%;
+		overflow: hidden;
+		background: #06060a;
+		font-family: monospace;
+	}
+	#layout {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		width: 100vw;
+		height: 100vh;
+		gap: 6px;
+	}
+	#game-container {
+		position: relative;
+		flex-shrink: 0;
+	}
+	canvas {
+		display: block;
+		image-rendering: pixelated;
+		image-rendering: crisp-edges;
+		transform-origin: top left;
+	}
+	#overlay {
+		position: absolute;
+		top: 0; left: 0;
+		width: 100%; height: 100%;
+		background: rgba(0,0,0,0.88);
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		z-index: 10;
+	}
+	#overlay h1 {
+		color: #5599ff;
+		font-size: clamp(14px, 2vw, 26px);
+		letter-spacing: 6px;
+		margin-bottom: 8px;
+		text-shadow: 0 0 20px #5599ff88;
+	}
+	#overlay .subtitle {
+		color: #445566;
+		font-size: clamp(10px, 1vw, 13px);
+		margin-bottom: 24px;
+		letter-spacing: 2px;
+	}
+	.menu-option {
+		color: #aaa;
+		font-size: clamp(12px, 1.2vw, 16px);
+		padding: 7px 22px;
+		margin: 3px 0;
+		cursor: pointer;
+		border: 1px solid #222;
+		min-width: 220px;
+		text-align: left;
+		background: #0d0d14;
+		transition: all 0.12s;
+		letter-spacing: 1px;
+	}
+	.menu-option:hover {
+		color: #fff;
+		border-color: #5599ff;
+		background: #101828;
+	}
+	.menu-option .key { color: #5599ff; margin-right: 8px; }
+	#info-bar {
+		font-size: clamp(14px, 1.4vw, 22px);
+		color: #445566;
+		letter-spacing: 1px;
+		white-space: nowrap;
+		user-select: none;
+	}
+</style>
+</head>
+<body>
+<div id="layout">
+<div id="game-container">
+	<canvas id="gameCanvas"></canvas>
+	<div id="overlay">
+		<h1>CAVES OF THE SNAILMEN</h1>
+		<div class="subtitle">by torgo (2016)</div>
+		<div class="menu-option" onclick="startNewGame()"><span class="key">[N]</span> New Game</div>
+		</div>
+</div>
+<div id="info-bar">W/S: fwd/back &nbsp;|&nbsp; A/D: strafe &nbsp;|&nbsp; Q/E or ←/→: turn &nbsp;|&nbsp; G: pickup &nbsp;|&nbsp; I: inventory &nbsp;|&nbsp; D: drop &nbsp;|&nbsp; C: character &nbsp;|&nbsp; &gt;: stairs</div>
+</div>
+
+<script>
+const TILE_SIZE = 16;
+const COLS = 32;
+const MAP_W = 80;
+const MAP_H = 43;
+const PANEL_H = 7;
+const SCREEN_H = MAP_H + PANEL_H;
+const SCREEN_W = MAP_W;
+const BAR_W = 20;
+const MSG_X = BAR_W + 2;
+const MSG_W = SCREEN_W - BAR_W - 2;
+const MSG_H = PANEL_H - 1;
+
+const TORCH_RADIUS = 10;
+const ROOM_MIN = 6, ROOM_MAX = 10, MAX_ROOMS = 30;
+const HEAL_AMOUNT = 4;
+const LIGHTNING_DMG = 20, LIGHTNING_RANGE = 5;
+const CONFUSE_TURNS = 10, CONFUSE_RANGE = 8;
+const BLIZZARD_RANGE = 8, BLIZZARD_DMG = 6;
+const FIREBALL_RADIUS = 3, FIREBALL_DMG = 12;
+const SMELL_RANGE = 30;
+const LEVEL_UP_BASE = 200, LEVEL_UP_FACTOR = 150;
+
+const T_DARK_GROUND = 0;
+const T_LIGHT_GROUND = 1;
+const T_LIGHT_WALL = 13;
+const T_DARK_WALL = 14;
+
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+ctx.imageSmoothingEnabled = false;
+
+const SCALE = 2;
+
+function resizeCanvas() {
+	canvas.width = SCREEN_W * TILE_SIZE * SCALE;
+	canvas.height = SCREEN_H * TILE_SIZE * SCALE;
+	ctx.imageSmoothingEnabled = false;
+	fitCanvasToWindow();
+}
+
+function fitCanvasToWindow() {
+	const infoBarH = document.getElementById('info-bar').offsetHeight + 10;
+	const scaleX = window.innerWidth / canvas.width;
+	const scaleY = (window.innerHeight - infoBarH) / canvas.height;
+	const fit = Math.min(scaleX, scaleY);
+	canvas.style.width = (canvas.width * fit) + 'px';
+	canvas.style.height = (canvas.height * fit) + 'px';
+	cssScale = fit;
+}
+
+let cssScale = 1;
+
+resizeCanvas();
+window.addEventListener('resize', () => { fitCanvasToWindow(); dirtyFov = true; });
+
+const overlay = document.getElementById('overlay');
+
+const tileImg = new Image();
+let tileLoaded = false;
+tileImg.onload = () => {
+	tileCanvas = tileImg;
+	tileLoaded = true;
+};
+tileImg.src = 'assets/tiles.png';
+const ambientAudio = new Audio('assets/ambient.mp3');
+ambientAudio.loop = true;
+ambientAudio.volume = 0.35;
+document.addEventListener('click', () => {
+	if (ambientAudio.paused) ambientAudio.play().catch(() => {});
+}, { once: true });
+document.addEventListener('keydown', () => {
+	if (ambientAudio.paused) ambientAudio.play().catch(() => {});
+}, { once: true });
+
+
+let gameState = null;
+let inputMode = 'normal';
+let pendingSpell = null;
+let mouseX = 0, mouseY = 0;
+let animFrame = null;
+let gameMsgs = [];
+let dirtyFov = true;
+let fovMap = null;
+
+function rng(min, max) {
+	return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function rfloat() {
+	return Math.random();
+}
+
+class Tile {
+	constructor(blocked) {
+		this.blocked = blocked;
+		this.blockSight = blocked;
+		this.explored = false;
+	}
+}
+
+class Rect {
+	constructor(x, y, w, h) {
+		this.x1 = x; this.y1 = y;
+		this.x2 = x + w; this.y2 = y + h;
+	}
+	center() {
+		return [Math.floor((this.x1 + this.x2) / 2), Math.floor((this.y1 + this.y2) / 2)];
+	}
+	intersects(other) {
+		return this.x1 <= other.x2 && this.x2 >= other.x1 && this.y1 <= other.y2 && this.y2 >= other.y1;
+	}
+}
+
+class Fighter {
+	constructor(hp, defense, power, xp, deathFn) {
+		this.baseMaxHp = hp;
+		this.hp = hp;
+		this.baseDefense = defense;
+		this.basePower = power;
+		this.xp = xp;
+		this.deathFn = deathFn;
+		this.owner = null;
+	}
+	get maxHp() {
+		let bonus = 0;
+		for (const e of getAllEquipped(this.owner)) bonus += e.maxHpBonus;
+		return this.baseMaxHp + bonus;
+	}
+	get power() {
+		let bonus = 0;
+		for (const e of getAllEquipped(this.owner)) bonus += e.powerBonus;
+		return this.basePower + bonus;
+	}
+	get defense() {
+		let bonus = 0;
+		for (const e of getAllEquipped(this.owner)) bonus += e.defenseBonus;
+		return this.baseDefense + bonus;
+	}
+	takeDamage(dmg) {
+		if (dmg > 0) this.hp -= dmg;
+		if (this.hp <= 0) {
+			if (this.deathFn) this.deathFn(this.owner);
+			if (this.owner !== gameState.player) {
+				gameState.player.fighter.xp += this.xp;
+			}
+		}
+	}
+	attack(target) {
+		const ranHit = rfloat();
+		const ranDef = rfloat();
+		let crit = false;
+		let hitMult = ranHit;
+		if (rfloat() * 100 > 90) { hitMult = 2; crit = true; }
+		const dmg = Math.floor(hitMult * this.power - ranDef * target.fighter.defense);
+		if (crit) msg(this.owner.name.toUpperCase() + ' CRITICAL HIT!', '#ff9944');
+		if (dmg > 0) {
+			msg(capitalize(this.owner.name) + ' attacks ' + target.name + ' for ' + dmg + ' hp.', '#cccccc');
+			target.fighter.takeDamage(dmg);
+		} else {
+			msg(capitalize(this.owner.name) + ' attacks ' + target.name + ' but misses.', '#8899bb');
+		}
+	}
+	heal(amount) {
+		this.hp = Math.min(this.hp + amount, this.maxHp);
+	}
+}
+
+class BasicMonster {
+	constructor() {
+		this.owner = null;
+		this.hasSeenPlayer = false;
+	}
+	takeTurn() {
+		const monster = this.owner;
+		const gs = gameState;
+		if (isInFov(monster.x, monster.y)) {
+			this.hasSeenPlayer = true;
+			if (distBetween(monster, gs.player) >= 2) {
+				monster.moveTowards(gs.player.x, gs.player.y);
+			} else if (gs.player.fighter.hp > 0) {
+				monster.fighter.attack(gs.player);
+			}
+		} else if (this.hasSeenPlayer && distBetween(monster, gs.player) <= SMELL_RANGE) {
+			monster.moveTowards(gs.player.x, gs.player.y);
+		}
+	}
+}
+
+class ConfusedMonster {
+	constructor(oldAi, turns = CONFUSE_TURNS) {
+		this.oldAi = oldAi;
+		this.turnsLeft = turns;
+		this.owner = null;
+	}
+	takeTurn() {
+		if (this.turnsLeft > 0) {
+			this.owner.move(rng(-1, 1), rng(-1, 1));
+			this.turnsLeft--;
+		} else {
+			this.owner.ai = this.oldAi;
+			if (this.oldAi) this.oldAi.owner = this.owner;
+			msg('The ' + this.owner.name + ' is no longer confused!', '#ff6666');
+		}
+	}
+}
+
+class Item {
+	constructor(useFn) {
+		this.useFn = useFn;
+		this.owner = null;
+	}
+	use() {
+		if (this.owner.equipment) {
+			this.owner.equipment.toggleEquip();
+			return;
+		}
+		if (!this.useFn) {
+			msg('Cannot use ' + this.owner.name + '.', '#aaaaaa');
+			return;
+		}
+		const result = this.useFn();
+		if (result !== 'cancelled') {
+			gameState.inventory = gameState.inventory.filter(i => i !== this.owner);
+		}
+	}
+	pickUp() {
+		if (gameState.inventory.length >= 26) {
+			msg('Inventory full!', '#ff4444');
+			return;
+		}
+		gameState.inventory.push(this.owner);
+		gameState.objects = gameState.objects.filter(o => o !== this.owner);
+		msg('Picked up ' + this.owner.name + '.', '#44ff44');
+		if (this.owner.equipment && !getEquippedInSlot(this.owner.equipment.slot)) {
+			this.owner.equipment.equip();
+		}
+	}
+	drop() {
+		if (this.owner.equipment && this.owner.equipment.isEquipped) this.owner.equipment.dequip();
+		gameState.objects.push(this.owner);
+		gameState.inventory = gameState.inventory.filter(i => i !== this.owner);
+		this.owner.x = gameState.player.x;
+		this.owner.y = gameState.player.y;
+		msg('Dropped ' + this.owner.name + '.', '#ffff44');
+	}
+}
+
+class Equipment {
+	constructor(slot, powerBonus = 0, defenseBonus = 0, maxHpBonus = 0) {
+		this.slot = slot;
+		this.powerBonus = powerBonus;
+		this.defenseBonus = defenseBonus;
+		this.maxHpBonus = maxHpBonus;
+		this.isEquipped = false;
+		this.owner = null;
+	}
+	toggleEquip() {
+		if (this.isEquipped) this.dequip(); else this.equip();
+	}
+	equip() {
+		const old = getEquippedInSlot(this.slot);
+		if (old) old.dequip();
+		this.isEquipped = true;
+		msg('Equipped ' + this.owner.name + ' in ' + this.slot + '.', '#44ff88');
+	}
+	dequip() {
+		this.isEquipped = false;
+		msg('Removed ' + this.owner.name + ' from ' + this.slot + '.', '#ffff66');
+	}
+}
+
+class Obj {
+	constructor(x, y, tileIdx, name, opts = {}) {
+		this.x = x; this.y = y;
+		this.tileIdx = tileIdx;
+		this.name = name;
+		this.blocks = opts.blocks || false;
+		this.alwaysVisible = opts.alwaysVisible || false;
+		this.fighter = opts.fighter || null;
+		this.ai = opts.ai || null;
+		this.item = opts.item || null;
+		this.equipment = opts.equipment || null;
+		if (this.fighter) this.fighter.owner = this;
+		if (this.ai) this.ai.owner = this;
+		if (this.item) this.item.owner = this;
+		if (this.equipment) {
+			this.equipment.owner = this;
+			this.item = new Item(null);
+			this.item.owner = this;
+		}
+	}
+	move(dx, dy) {
+		if (!isBlocked(this.x + dx, this.y + dy)) {
+			this.x += dx;
+			this.y += dy;
+		}
+	}
+	moveTowards(tx, ty) {
+		let dx = tx - this.x;
+		let dy = ty - this.y;
+		const dist = Math.sqrt(dx * dx + dy * dy);
+		if (dist === 0) return;
+		const ndx = Math.round(dx / dist);
+		const ndy = Math.round(dy / dist);
+		if (!isBlocked(this.x + ndx, this.y + ndy)) {
+			this.move(ndx, ndy);
+			return;
+		}
+		dx = tx - this.x; dy = ty - this.y;
+		const dirX = dx ? Math.sign(dx) : 0;
+		const dirY = dy ? Math.sign(dy) : 0;
+		if (Math.abs(dx) > Math.abs(dy)) {
+			if (isBlocked(this.x + dirX, this.y)) this.move(0, dirY);
+			else this.move(dirX, 0);
+		} else {
+			if (isBlocked(this.x, this.y + dirY)) this.move(dirX, 0);
+			else this.move(0, dirY);
+		}
+	}
+	sendToBack() {
+		gameState.objects = gameState.objects.filter(o => o !== this);
+		gameState.objects.unshift(this);
+	}
+}
+
+function getEquippedInSlot(slot) {
+	for (const obj of gameState.inventory) {
+		if (obj.equipment && obj.equipment.slot === slot && obj.equipment.isEquipped)
+			return obj.equipment;
+	}
+	return null;
+}
+
+function getAllEquipped(obj) {
+	if (obj !== gameState.player) return [];
+	return gameState.inventory
+		.filter(i => i.equipment && i.equipment.isEquipped)
+		.map(i => i.equipment);
+}
+
+function isBlocked(x, y) {
+	if (x < 0 || y < 0 || x >= MAP_W || y >= MAP_H) return true;
+	if (gameState.map[x][y].blocked) return true;
+	for (const o of gameState.objects) {
+		if (o.blocks && o.x === x && o.y === y) return true;
+	}
+	return false;
+}
+
+function distBetween(a, b) {
+	const dx = b.x - a.x, dy = b.y - a.y;
+	return Math.sqrt(dx * dx + dy * dy);
+}
+
+function distTo(obj, x, y) {
+	const dx = obj.x - x, dy = obj.y - y;
+	return Math.sqrt(dx * dx + dy * dy);
+}
+
+function capitalize(s) {
+	return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function msg(text, color = '#cccccc') {
+	const lines = wrapText(text, MSG_W);
+	for (const line of lines) {
+		if (gameMsgs.length >= MSG_H) gameMsgs.shift();
+		gameMsgs.push({ text: line, color });
+	}
+}
+
+function wrapText(text, width) {
+	const words = text.split(' ');
+	const lines = [];
+	let current = '';
+	for (const w of words) {
+		if (current.length + w.length + 1 > width && current) {
+			lines.push(current);
+			current = w;
+		} else {
+			current = current ? current + ' ' + w : w;
+		}
+	}
+	if (current) lines.push(current);
+	return lines;
+}
+
+function computeFov() {
+	const gs = gameState;
+	fovMap = [];
+	for (let x = 0; x < MAP_W; x++) {
+		fovMap[x] = new Uint8Array(MAP_H);
+	}
+	const px = gs.player.x, py = gs.player.y;
+	const r = TORCH_RADIUS;
+	for (let angle = 0; angle < 360; angle += 0.5) {
+		const rad = angle * Math.PI / 180;
+		const cos = Math.cos(rad), sin = Math.sin(rad);
+		let x = px + 0.5, y = py + 0.5;
+		for (let i = 0; i < r; i++) {
+			const ix = Math.floor(x), iy = Math.floor(y);
+			if (ix < 0 || iy < 0 || ix >= MAP_W || iy >= MAP_H) break;
+			fovMap[ix][iy] = 1;
+			gs.map[ix][iy].explored = true;
+			if (gs.map[ix][iy].blockSight) break;
+			x += cos; y += sin;
+		}
+	}
+}
+
+function isInFov(x, y) {
+	if (!fovMap || x < 0 || y < 0 || x >= MAP_W || y >= MAP_H) return false;
+	return fovMap[x][y] === 1;
+}
+
+function getTileUV(tileIdx) {
+	const col = tileIdx % COLS;
+	const row = Math.floor(tileIdx / COLS);
+	return [col * TILE_SIZE, row * TILE_SIZE];
+}
+
+
+
+let playerFacing = 0;
+
+const FACING_DIRS = [
+	[0, -1],
+	[1, -1],
+	[1, 0],
+	[1, 1],
+	[0, 1],
+	[-1, 1],
+	[-1, 0],
+	[-1, -1]
+];
+
+function drawTile(tileIdx, screenX, screenY) {
+	if (!tileLoaded) return;
+	const [tx, ty] = getTileUV(tileIdx);
+	const dx = screenX * TILE_SIZE * SCALE;
+	const dy = screenY * TILE_SIZE * SCALE;
+	const sz = TILE_SIZE * SCALE;
+	ctx.drawImage(tileCanvas, tx, ty, TILE_SIZE, TILE_SIZE, dx, dy, sz, sz);
+}
+
+function drawChar(ch, screenX, screenY, color) {
+	ctx.fillStyle = color;
+	ctx.font = (TILE_SIZE * SCALE) + 'px monospace';
+	ctx.textBaseline = 'top';
+	ctx.fillText(ch, screenX * TILE_SIZE * SCALE, screenY * TILE_SIZE * SCALE);
+}
+
+function drawText(text, screenX, screenY, color, size = 14) {
+	ctx.fillStyle = color;
+	ctx.font = size + 'px monospace';
+	ctx.textBaseline = 'top';
+	ctx.fillText(text, screenX, screenY);
+}
+
+const RC_W = 320;
+const RC_H = 200;
+const FOV_RAD = Math.PI / 2.5;
+const HALF_FOV = FOV_RAD / 2;
+const WALL_TILE_IDX = 13;
+const CEILING_COLOR = '#0a0a1a';
+const FLOOR_COLOR = '#0f0f08';
+
+let rcCanvas = null;
+let rcCtx = null;
+let wallTexOffscreen = null;
+let wallTexCtx = null;
+let spriteOffscreen = null;
+let spriteCtx = null;
+
+function ensureRcBuffers() {
+	if (!rcCanvas) {
+		rcCanvas = document.createElement('canvas');
+		rcCanvas.width = RC_W;
+		rcCanvas.height = RC_H;
+		rcCtx = rcCanvas.getContext('2d');
+		rcCtx.imageSmoothingEnabled = false;
+	}
+}
+
+function facingAngle() {
+	const [dx, dy] = FACING_DIRS[playerFacing];
+	return Math.atan2(dy, dx);
+}
+
+function renderRaycaster() {
+	if (!tileLoaded) return;
+	ensureRcBuffers();
+	const gs = gameState;
+
+	const angle = facingAngle();
+	const dirX  = Math.cos(angle);
+	const dirY  = Math.sin(angle);
+	const halfW = Math.tan(HALF_FOV);
+	const planeX = -dirY * halfW;
+	const planeY =  dirX * halfW;
+	const posX = gs.player.x + 0.5;
+	const posY = gs.player.y + 0.5;
+
+	const rc = rcCtx;
+	rc.globalAlpha = 1;
+	rc.globalCompositeOperation = 'source-over';
+	rc.fillStyle = CEILING_COLOR;
+	rc.fillRect(0, 0, RC_W, RC_H / 2);
+	rc.fillStyle = FLOOR_COLOR;
+	rc.fillRect(0, RC_H / 2, RC_W, RC_H / 2);
+
+	const zBuffer = new Float32Array(RC_W);
+
+	for (let col = 0; col < RC_W; col++) {
+		const cameraX = 2 * col / RC_W - 1;
+		const rayDirX = dirX + planeX * cameraX;
+		const rayDirY = dirY + planeY * cameraX;
+
+		let mapX = Math.floor(posX);
+		let mapY = Math.floor(posY);
+
+		const deltaDistX = Math.abs(rayDirX) < 1e-10 ? 1e30 : Math.abs(1 / rayDirX);
+		const deltaDistY = Math.abs(rayDirY) < 1e-10 ? 1e30 : Math.abs(1 / rayDirY);
+		const stepX = rayDirX < 0 ? -1 : 1;
+		const stepY = rayDirY < 0 ? -1 : 1;
+		let sideDistX = rayDirX < 0 ? (posX - mapX) * deltaDistX : (mapX + 1 - posX) * deltaDistX;
+		let sideDistY = rayDirY < 0 ? (posY - mapY) * deltaDistY : (mapY + 1 - posY) * deltaDistY;
+
+		let side = 0;
+		let hit = false;
+		for (let i = 0; i < 80; i++) {
+			if (sideDistX < sideDistY) { sideDistX += deltaDistX; mapX += stepX; side = 0; }
+			else                        { sideDistY += deltaDistY; mapY += stepY; side = 1; }
+			if (mapX < 0 || mapY < 0 || mapX >= MAP_W || mapY >= MAP_H) { hit = true; break; }
+			if (gs.map[mapX][mapY].blocked) { hit = true; break; }
+		}
+
+		if (!hit) { zBuffer[col] = 1e10; continue; }
+
+		let perpDist = side === 0
+			? (mapX - posX + (1 - stepX) / 2) / rayDirX
+			: (mapY - posY + (1 - stepY) / 2) / rayDirY;
+		perpDist = Math.max(0.01, perpDist);
+		zBuffer[col] = perpDist;
+
+		const wallH   = Math.floor(RC_H / perpDist);
+		const wallTop = Math.max(0, Math.floor((RC_H - wallH) / 2));
+		const wallBot = Math.min(RC_H, Math.floor((RC_H + wallH) / 2));
+		const drawH   = wallBot - wallTop;
+		if (drawH <= 0) continue;
+
+		const oob = mapX < 0 || mapY < 0 || mapX >= MAP_W || mapY >= MAP_H;
+		if (oob) { rc.fillStyle = '#111'; rc.fillRect(col, wallTop, 1, drawH); continue; }
+
+		const explored = gs.map[mapX][mapY].explored;
+		const visible  = isInFov(mapX, mapY);
+		if (!explored && !visible) continue;
+
+		let wallX = side === 0
+			? posY + perpDist * rayDirY
+			: posX + perpDist * rayDirX;
+		wallX -= Math.floor(wallX);
+		const texCol = Math.min(TILE_SIZE - 1, Math.floor(wallX * TILE_SIZE));
+
+		const texIdx = visible ? WALL_TILE_IDX : 14;
+		const [texSrcX, texSrcY] = getTileUV(texIdx);
+
+		rc.drawImage(tileCanvas, texSrcX + texCol, texSrcY, 1, TILE_SIZE, col, wallTop, 1, drawH);
+
+		const distFade  = Math.max(0, 1.0 - perpDist / TORCH_RADIUS);
+		const sideDim   = side === 1 ? 0.35 : 0.0;
+		const fogAmount = visible ? (1.0 - (0.25 + 0.75 * distFade)) : 0.82;
+		const darkness  = Math.min(1, fogAmount + sideDim);
+		if (darkness > 0.01) {
+			rc.globalAlpha = darkness;
+			rc.fillStyle = '#000';
+			rc.fillRect(col, wallTop, 1, drawH);
+			rc.globalAlpha = 1;
+		}
+	}
+
+	const sprites = [];
+	for (const obj of gs.objects) {
+		if (obj === gs.player) continue;
+		const inFov     = isInFov(obj.x, obj.y);
+		const alwaysShow = obj.alwaysVisible
+			&& gs.map[obj.x] && gs.map[obj.x][obj.y]
+			&& gs.map[obj.x][obj.y].explored;
+		if (!inFov && !alwaysShow) continue;
+		const sx = obj.x + 0.5 - posX;
+		const sy = obj.y + 0.5 - posY;
+		sprites.push({ obj, sx, sy, dist2: sx*sx + sy*sy });
+	}
+	sprites.sort((a, b) => b.dist2 - a.dist2);
+
+	const invDet = 1.0 / (planeX * dirY - dirX * planeY);
+
+	for (const { obj, sx, sy } of sprites) {
+		const transformX =  invDet * ( dirY * sx - dirX * sy);
+		const transformY =  invDet * (-planeY * sx + planeX * sy);
+		if (transformY <= 0.1) continue;
+
+		const sprScreenX = Math.floor((RC_W / 2) * (1 + transformX / transformY));
+		const sprH = Math.max(1, Math.floor(RC_H / transformY));
+		const sprW = sprH;
+
+		const drawStartY = Math.max(0, Math.floor((RC_H - sprH) / 2));
+		const drawEndY   = Math.min(RC_H, Math.floor((RC_H + sprH) / 2));
+		const drawStartX = Math.max(0, sprScreenX - Math.floor(sprW / 2));
+		const drawEndX   = Math.min(RC_W, sprScreenX + Math.floor(sprW / 2));
+		if (drawEndX <= drawStartX || drawEndY <= drawStartY) continue;
+
+		const [texSrcX, texSrcY] = getTileUV(obj.tileIdx);
+		const visible   = isInFov(obj.x, obj.y);
+		const distFade  = Math.max(0, 1.0 - transformY / TORCH_RADIUS);
+		const fogAmount = visible ? (1.0 - distFade) : (1.0 - distFade * 0.4);
+		const darkness  = Math.min(0.95, fogAmount);
+
+		for (let stripe = drawStartX; stripe < drawEndX; stripe++) {
+			if (transformY >= zBuffer[stripe]) continue;
+			const texXf = (stripe - (sprScreenX - Math.floor(sprW / 2))) / sprW;
+			const texX  = Math.min(TILE_SIZE - 1, Math.max(0, Math.floor(texXf * TILE_SIZE)));
+			rc.drawImage(
+				tileCanvas,
+				texSrcX + texX, texSrcY, 1, TILE_SIZE,
+				stripe, drawStartY, 1, drawEndY - drawStartY
+			);
+			if (darkness > 0.01) {
+				rc.globalAlpha = darkness;
+				rc.fillStyle = '#000';
+				rc.fillRect(stripe, drawStartY, 1, drawEndY - drawStartY);
+				rc.globalAlpha = 1;
+			}
+		}
+	}
+
+	const destW = SCREEN_W * TILE_SIZE * SCALE;
+	const destH = MAP_H * TILE_SIZE * SCALE;
+	ctx.imageSmoothingEnabled = false;
+	ctx.globalAlpha = 1;
+	ctx.drawImage(rcCanvas, 0, 0, RC_W, RC_H, 0, 0, destW, destH);
+}
+
+
+
+function renderGame() {
+	if (!gameState) return;
+	const gs = gameState;
+
+	if (dirtyFov) {
+		computeFov();
+		dirtyFov = false;
+	}
+
+	ctx.clearRect(0, 0, canvas.width, canvas.height);
+	ctx.fillStyle = '#000';
+	ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+	renderRaycaster();
+
+	const panelTop = MAP_H;
+	const panelPx = panelTop * TILE_SIZE * SCALE;
+	const W = canvas.width;
+
+	ctx.fillStyle = '#0a0a12';
+	ctx.fillRect(0, panelPx, W, PANEL_H * TILE_SIZE * SCALE);
+	ctx.strokeStyle = '#223';
+	ctx.lineWidth = 1;
+	ctx.beginPath();
+	ctx.moveTo(0, panelPx);
+	ctx.lineTo(W, panelPx);
+	ctx.stroke();
+
+	const px2 = 4;
+	const barY1 = panelPx + 2 * TILE_SIZE * SCALE;
+	const barY2 = panelPx + 3 * TILE_SIZE * SCALE;
+	const barH = TILE_SIZE * SCALE - 4;
+	const barW = BAR_W * TILE_SIZE * SCALE;
+	const hpPct = Math.max(0, gs.player.fighter.hp / gs.player.fighter.maxHp);
+	const xpNeeded = LEVEL_UP_BASE + gs.player.level * LEVEL_UP_FACTOR;
+	const xpPct = Math.min(1, gs.player.fighter.xp / xpNeeded);
+
+	const fSm = Math.max(20, SCALE * 14) + 'px monospace';
+	const fLg = Math.max(24, SCALE * 18) + 'px monospace';
+	const lineH = Math.max(26, SCALE * 18);
+
+	ctx.fillStyle = '#400';
+	ctx.fillRect(px2, barY1, barW, barH);
+	ctx.fillStyle = '#c33';
+	ctx.fillRect(px2, barY1, barW * hpPct, barH);
+	ctx.fillStyle = '#fff';
+	ctx.font = fSm;
+	ctx.textBaseline = 'middle';
+	ctx.fillText('HP: ' + gs.player.fighter.hp + '/' + gs.player.fighter.maxHp, px2 + 4, barY1 + barH / 2);
+
+	ctx.fillStyle = '#040';
+	ctx.fillRect(px2, barY2, barW, barH);
+	ctx.fillStyle = '#2a2';
+	ctx.fillRect(px2, barY2, barW * xpPct, barH);
+	ctx.fillStyle = '#fff';
+	ctx.fillText('XP: ' + gs.player.fighter.xp + '/' + xpNeeded, px2 + 4, barY2 + barH / 2);
+
+	ctx.fillStyle = '#4488ff';
+	ctx.font = fLg;
+	ctx.textBaseline = 'top';
+	ctx.fillText('S N A I L M E N', px2, panelPx + 2);
+
+	ctx.fillStyle = '#aaaaaa';
+	ctx.font = fSm;
+	const facingLabels = ['N','NE','E','SE','S','SW','W','NW'];
+	ctx.fillText('Floor ' + gs.dungeonLevel + '  Lvl ' + gs.player.level + '  Facing: ' + facingLabels[playerFacing], px2, panelPx + lineH + 4);
+
+	const msgAreaX = (BAR_W + 2) * TILE_SIZE * SCALE;
+	ctx.font = fSm;
+	ctx.textBaseline = 'top';
+	for (let i = 0; i < gameMsgs.length; i++) {
+		const m = gameMsgs[i];
+		ctx.fillStyle = m.color;
+		ctx.fillText(m.text, msgAreaX, panelPx + 2 + i * lineH);
+	}
+}
+
+function getNamesAt(x, y) {
+	if (!gameState) return '';
+	if (!isInFov(x, y)) return '';
+	const names = gameState.objects
+		.filter(o => o.x === x && o.y === y)
+		.map(o => o.name);
+	return names.join(', ');
+}
+
+function createRoom(r) {
+	for (let x = r.x1 + 1; x < r.x2; x++)
+		for (let y = r.y1 + 1; y < r.y2; y++) {
+			gameState.map[x][y].blocked = false;
+			gameState.map[x][y].blockSight = false;
+		}
+}
+
+function createHTunnel(x1, x2, y) {
+	for (let x = Math.min(x1, x2); x <= Math.max(x1, x2); x++) {
+		gameState.map[x][y].blocked = false;
+		gameState.map[x][y].blockSight = false;
+	}
+}
+
+function createVTunnel(y1, y2, x) {
+	for (let y = Math.min(y1, y2); y <= Math.max(y1, y2); y++) {
+		gameState.map[x][y].blocked = false;
+		gameState.map[x][y].blockSight = false;
+	}
+}
+
+function fromDungeonLevel(table) {
+	for (let i = table.length - 1; i >= 0; i--) {
+		if (gameState.dungeonLevel >= table[i][1]) return table[i][0];
+	}
+	return 0;
+}
+
+function randomChoice(options) {
+	const keys = Object.keys(options);
+	const total = keys.reduce((s, k) => s + options[k], 0);
+	let roll = Math.random() * total;
+	for (const k of keys) {
+		roll -= options[k];
+		if (roll <= 0) return k;
+	}
+	return keys[keys.length - 1];
+}
+
+function placeObjects(room) {
+	const maxMon = fromDungeonLevel([[2,1],[3,4],[5,6]]);
+	const monChances = {
+		snake: 45,
+		slime: fromDungeonLevel([[20,2],[40,3],[60,5]]),
+		snailman: fromDungeonLevel([[5,2],[20,4],[30,6]])
+	};
+
+	const maxItems = fromDungeonLevel([[1,1],[2,3],[3,5],[4,7]]);
+	const itemChances = {
+		heal: 35,
+		blizzard: fromDungeonLevel([[3,1],[15,2]]),
+		lightning: fromDungeonLevel([[25,4]]),
+		fireball: fromDungeonLevel([[25,6]]),
+		confuse: fromDungeonLevel([[3,1],[10,2]]),
+		sword: fromDungeonLevel([[5,1],[10,2],[15,3]]),
+		shield: fromDungeonLevel([[5,1],[10,2],[15,3]])
+	};
+
+	const numMon = rng(0, maxMon);
+	for (let i = 0; i < numMon; i++) {
+		const x = rng(room.x1 + 1, room.x2 - 1);
+		const y = rng(room.y1 + 1, room.y2 - 1);
+		if (!isBlocked(x, y)) {
+			const choice = randomChoice(monChances);
+			let monster;
+			if (choice === 'snailman') {
+				monster = new Obj(x, y, 169, 'snailman', {
+					blocks: true,
+					fighter: new Fighter(10, 1, 9, 100, monsterDeath),
+					ai: new BasicMonster()
+				});
+			} else if (choice === 'slime') {
+				monster = new Obj(x, y, 162, 'slime', {
+					blocks: true,
+					fighter: new Fighter(6, 1, 4, 55, monsterDeath),
+					ai: new BasicMonster()
+				});
+			} else {
+				monster = new Obj(x, y, 145, 'snake', {
+					blocks: true,
+					fighter: new Fighter(2, 0, 6, 35, monsterDeath),
+					ai: new BasicMonster()
+				});
+			}
+			gameState.objects.push(monster);
+		}
+	}
+
+	const numItems = rng(0, maxItems);
+	for (let i = 0; i < numItems; i++) {
+		const x = rng(room.x1 + 1, room.x2 - 1);
+		const y = rng(room.y1 + 1, room.y2 - 1);
+		if (!isBlocked(x, y)) {
+			const choice = randomChoice(itemChances);
+			let item;
+			if (choice === 'heal') {
+				item = new Obj(x, y, 24, 'healing potion', { item: new Item(castHeal), alwaysVisible: true });
+			} else if (choice === 'lightning') {
+				item = new Obj(x, y, 21, 'scroll of lightning', { item: new Item(castLightning), alwaysVisible: true });
+			} else if (choice === 'confuse') {
+				item = new Obj(x, y, 21, 'scroll of confusion', { item: new Item(castConfuse), alwaysVisible: true });
+			} else if (choice === 'blizzard') {
+				item = new Obj(x, y, 21, 'scroll of blizzard', { item: new Item(castBlizzard), alwaysVisible: true });
+			} else if (choice === 'fireball') {
+				item = new Obj(x, y, 21, 'scroll of fireball', { item: new Item(castFireball), alwaysVisible: true });
+			} else if (choice === 'sword') {
+				item = new Obj(x, y, 25, 'sword of might', { equipment: new Equipment('right hand', 3, 0, 0), alwaysVisible: true });
+			} else {
+				item = new Obj(x, y, 134, 'shield', { equipment: new Equipment('left hand', 0, 1, 0), alwaysVisible: true });
+			}
+			gameState.objects.push(item);
+			item.sendToBack();
+			item.alwaysVisible = true;
+		}
+	}
+}
+
+function makeMap() {
+	const gs = gameState;
+	gs.objects = [gs.player];
+	gs.map = Array.from({ length: MAP_W }, () => Array.from({ length: MAP_H }, () => new Tile(true)));
+	const rooms = [];
+	let lastX = 0, lastY = 0;
+
+	for (let r = 0; r < MAX_ROOMS; r++) {
+		const w = rng(ROOM_MIN, ROOM_MAX);
+		const h = rng(ROOM_MIN, ROOM_MAX);
+		const x = rng(0, MAP_W - w - 1);
+		const y = rng(0, MAP_H - h - 1);
+		const newRoom = new Rect(x, y, w, h);
+		if (rooms.some(ro => newRoom.intersects(ro))) continue;
+		createRoom(newRoom);
+		const [nx, ny] = newRoom.center();
+		if (rooms.length === 0) {
+			gs.player.x = nx;
+			gs.player.y = ny;
+		} else {
+			placeObjects(newRoom);
+			const [px, py] = rooms[rooms.length - 1].center();
+			if (Math.random() < 0.5) {
+				createHTunnel(px, nx, py);
+				createVTunnel(py, ny, nx);
+			} else {
+				createVTunnel(py, ny, px);
+				createHTunnel(px, nx, ny);
+			}
+		}
+		rooms.push(newRoom);
+		lastX = nx; lastY = ny;
+	}
+	gs.stairs = new Obj(lastX, lastY, 7, 'stairs', { alwaysVisible: true });
+	gs.objects.push(gs.stairs);
+	gs.stairs.sendToBack();
+}
+
+function monsterDeath(monster) {
+	msg(capitalize(monster.name) + ' dies! +' + monster.fighter.xp + ' xp.', '#ff4444');
+	monster.tileIdx = 22;
+	monster.blocks = false;
+	monster.fighter = null;
+	monster.ai = null;
+	monster.name = 'remains of ' + monster.name;
+	monster.sendToBack();
+}
+
+function playerDeath(player) {
+	msg('YOU DIED.', '#cc0000');
+	gameState.gamePhase = 'dead';
+	player.tileIdx = 22;
+}
+
+function castHeal() {
+	const p = gameState.player;
+	if (p.fighter.hp >= p.fighter.maxHp) {
+		msg('Already at full health.', '#ff4444');
+		return 'cancelled';
+	}
+	p.fighter.heal(HEAL_AMOUNT);
+	msg('You feel better.', '#aa44ff');
+}
+
+function castLightning() {
+	const target = closestMonster(LIGHTNING_RANGE);
+	if (!target) {
+		msg('No enemy in range.', '#ff4444');
+		return 'cancelled';
+	}
+	msg('Lightning strikes ' + target.name + ' for ' + LIGHTNING_DMG + ' damage!', '#aaaaff');
+	target.fighter.takeDamage(LIGHTNING_DMG);
+}
+
+function castConfuse() {
+	msg('Click an enemy to confuse it. Right-click to cancel.', '#44ffff');
+	startTargetMode('confuse');
+	return 'pending';
+}
+
+function castBlizzard() {
+	const enemies = [];
+	for (const obj of gameState.objects) {
+		if (obj.fighter && obj !== gameState.player && isInFov(obj.x, obj.y)) {
+			if (distBetween(gameState.player, obj) <= BLIZZARD_RANGE) {
+				enemies.push(obj);
+			}
+		}
+	}
+	if (!enemies.length) {
+		msg('No enemies in range.', '#ff4444');
+		return 'cancelled';
+	}
+	for (const e of enemies) {
+		const dmg = Math.floor(Math.random() * BLIZZARD_DMG);
+		if (dmg > 0) {
+			msg('Blizzard hits ' + e.name + ' for ' + dmg + ' damage!', '#88aaff');
+			e.fighter.takeDamage(dmg);
+		} else {
+			msg('Blizzard misses ' + e.name + '!', '#ff4444');
+		}
+	}
+}
+
+function castFireball() {
+	msg('Click a tile for fireball. Right-click to cancel.', '#44ffff');
+	startTargetMode('fireball');
+	return 'pending';
+}
+
+function startTargetMode(spell) {
+	inputMode = 'target';
+	pendingSpell = spell;
+	renderGame();
+}
+
+function handleTarget(x, y) {
+	inputMode = 'normal';
+	const spell = pendingSpell;
+	pendingSpell = null;
+	if (x === null) {
+		msg('Cancelled.', '#888888');
+		gameState.inventory = gameState.inventory.filter(i => i.item && i.item.useFn !== (spell === 'fireball' ? castFireball : castConfuse) || true);
+		return;
+	}
+	if (spell === 'fireball') {
+		if (!isInFov(x, y)) { msg('Cannot target there.', '#ff4444'); return; }
+		msg('FIREBALL explodes!', '#ff8800');
+		for (const obj of gameState.objects) {
+			if (obj.fighter && distTo(obj, x, y) <= FIREBALL_RADIUS) {
+				msg(capitalize(obj.name) + ' burns for ' + FIREBALL_DMG + ' damage!', '#ff6600');
+				obj.fighter.takeDamage(FIREBALL_DMG);
+			}
+		}
+	} else if (spell === 'confuse') {
+		let target = null;
+		for (const obj of gameState.objects) {
+			if (obj.x === x && obj.y === y && obj.fighter && obj !== gameState.player) {
+				target = obj;
+				break;
+			}
+		}
+		if (!target) { msg('No monster there.', '#ff4444'); return; }
+		const oldAi = target.ai;
+		target.ai = new ConfusedMonster(oldAi);
+		target.ai.owner = target;
+		msg(capitalize(target.name) + ' looks confused!', '#44ff88');
+	}
+	monstersAct();
+	dirtyFov = true;
+}
+
+function closestMonster(maxRange) {
+	let best = null, bestDist = maxRange + 1;
+	for (const obj of gameState.objects) {
+		if (obj.fighter && obj !== gameState.player && isInFov(obj.x, obj.y)) {
+			const d = distBetween(gameState.player, obj);
+			if (d < bestDist) { best = obj; bestDist = d; }
+		}
+	}
+	return best;
+}
+
+function playerMoveOrAttack(dx, dy) {
+	const gs = gameState;
+	const nx = gs.player.x + dx, ny = gs.player.y + dy;
+	let target = null;
+	for (const o of gs.objects) {
+		if (o.x === nx && o.y === ny && o.fighter) { target = o; break; }
+	}
+	if (target) {
+		gs.player.fighter.attack(target);
+	} else {
+		gs.player.move(dx, dy);
+		dirtyFov = true;
+	}
+}
+
+function monstersAct() {
+	for (const obj of gameState.objects) {
+		if (obj.ai && obj !== gameState.player) obj.ai.takeTurn();
+	}
+}
+
+function checkLevelUp() {
+	const gs = gameState;
+	const needed = LEVEL_UP_BASE + gs.player.level * LEVEL_UP_FACTOR;
+	if (gs.player.fighter.xp >= needed) {
+		gs.player.fighter.xp -= needed;
+		gs.player.level++;
+		msg('Level up! You are now level ' + gs.player.level + '!', '#ffff00');
+		showLevelUpMenu();
+	}
+}
+
+function showLevelUpMenu() {
+	const gs = gameState;
+	const f = gs.player.fighter;
+	showMenuOverlay('Level Up! Choose a stat:', [
+		'Constitution (+20 HP, from ' + f.maxHp + ')',
+		'Strength (+1 attack, from ' + f.power + ')',
+		'Agility (+1 defense, from ' + f.defense + ')'
+	], (choice) => {
+		if (choice === 0) { f.baseMaxHp += 20; f.hp += 20; }
+		else if (choice === 1) { f.basePower += 1; }
+		else if (choice === 2) { f.baseDefense += 1; }
+		renderGame();
+	});
+}
+
+function showInventoryMenu(header, callback) {
+	const inv = gameState.inventory;
+	if (!inv.length) {
+		showMenuOverlay(header, ['(empty)'], () => {});
+		return;
+	}
+	const opts = inv.map(i => {
+		let name = i.name;
+		if (i.equipment && i.equipment.isEquipped) name += ' [equipped]';
+		return name;
+	});
+	showMenuOverlay(header, opts, (idx) => {
+		if (idx === null || idx >= inv.length) return;
+		callback(inv[idx]);
+	});
+}
+
+let activeMenuCallback = null;
+let activeMenuOptions = [];
+
+function showMenuOverlay(title, options, callback) {
+	activeMenuCallback = callback;
+	activeMenuOptions = options;
+	inputMode = 'menu';
+
+	overlay.innerHTML = '';
+	overlay.style.display = 'flex';
+
+	const h = document.createElement('div');
+	h.style.cssText = 'color:#aaaacc;font-family:monospace;font-size:13px;margin-bottom:12px;text-align:center;white-space:pre-wrap;max-width:360px;';
+	h.textContent = title;
+	overlay.appendChild(h);
+
+	options.forEach((opt, i) => {
+		const btn = document.createElement('div');
+		btn.className = 'menu-option';
+		const letter = String.fromCharCode(97 + i);
+		btn.innerHTML = '<span class="key">[' + letter + ']</span> ' + opt;
+		btn.onclick = () => {
+			overlay.style.display = 'none';
+			inputMode = 'normal';
+			callback(i);
+			renderGame();
+		};
+		overlay.appendChild(btn);
+	});
+
+	const cancel = document.createElement('div');
+	cancel.className = 'menu-option';
+	cancel.innerHTML = '<span class="key">[Esc]</span> Cancel';
+	cancel.onclick = () => {
+		overlay.style.display = 'none';
+		inputMode = 'normal';
+		callback(null);
+		renderGame();
+	};
+	overlay.appendChild(cancel);
+}
+
+function showMsgBox(text) {
+	showMenuOverlay(text, [], () => {});
+}
+
+function nextLevel() {
+	const gs = gameState;
+	msg('You descend deeper...', '#aa66ff');
+	gs.player.fighter.heal(Math.floor(gs.player.fighter.maxHp / 2));
+	gs.dungeonLevel++;
+	makeMap();
+	dirtyFov = true;
+	fovMap = null;
+}
+
+function newGame() {
+	const f = new Fighter(30, 2, 3, 0, playerDeath);
+	const player = new Obj(0, 0, 17, 'player', { blocks: true, fighter: f });
+	player.level = 1;
+
+	gameState = {
+		player,
+		objects: [player],
+		inventory: [],
+		map: null,
+		stairs: null,
+		dungeonLevel: 1,
+		gamePhase: 'playing'
+	};
+	gameMsgs = [];
+	fovMap = null;
+	dirtyFov = true;
+	makeMap();
+	const dagger = new Obj(0, 0, 25, 'dagger', { equipment: new Equipment('right hand', 2, 0, 0) });
+	gameState.inventory.push(dagger);
+	dagger.equipment.equip();
+	msg('Welcome to the Caves of the Snailmen. Good luck.', '#ffffff');
+	overlay.style.display = 'none';
+	inputMode = 'normal';
+	loop();
+}
+
+
+
+function startNewGame() { newGame(); }
+
+let looping = false;
+function loop() {
+	if (looping) return;
+	looping = true;
+	function frame() {
+		try { renderGame(); } catch(e) { console.error('renderGame error:', e); }
+		animFrame = requestAnimationFrame(frame);
+	}
+	frame();
+}
+
+canvas.addEventListener('mousemove', (e) => {
+	const rect = canvas.getBoundingClientRect();
+	const px = (e.clientX - rect.left) / (TILE_SIZE * SCALE * cssScale);
+	const py = (e.clientY - rect.top) / (TILE_SIZE * SCALE * cssScale);
+	mouseX = Math.floor(px);
+	mouseY = Math.floor(py);
+});
+
+canvas.addEventListener('click', (e) => {
+	if (inputMode !== 'target') return;
+	const rect = canvas.getBoundingClientRect();
+	const px = (e.clientX - rect.left) / (TILE_SIZE * SCALE * cssScale);
+	const py = (e.clientY - rect.top) / (TILE_SIZE * SCALE * cssScale);
+	const tx = Math.floor(px), ty = Math.floor(py);
+	handleTarget(tx, ty);
+	renderGame();
+});
+
+canvas.addEventListener('contextmenu', (e) => {
+	e.preventDefault();
+	if (inputMode === 'target') {
+		handleTarget(null, null);
+		renderGame();
+	}
+});
+
+document.addEventListener('keydown', (e) => {
+	if (inputMode === 'menu') {
+		if (e.key === 'Escape') {
+			overlay.style.display = 'none';
+			inputMode = 'normal';
+			if (activeMenuCallback) activeMenuCallback(null);
+			renderGame();
+		} else {
+			const code = e.key.toLowerCase().charCodeAt(0) - 97;
+			if (code >= 0 && code < activeMenuOptions.length) {
+				overlay.style.display = 'none';
+				inputMode = 'normal';
+				const cb = activeMenuCallback;
+				if (cb) cb(code);
+				renderGame();
+			}
+		}
+		return;
+	}
+
+	if (inputMode === 'target') {
+		if (e.key === 'Escape') {
+			handleTarget(null, null);
+			renderGame();
+		}
+		return;
+	}
+
+	if (!gameState || gameState.gamePhase !== 'playing') {
+		if (e.key === 'Escape' || e.key === 'Enter') {
+			overlay.style.display = 'flex';
+			showMainMenu();
+		}
+		return;
+	}
+
+	const [fdx, fdy] = FACING_DIRS[playerFacing];
+	const rightFacing = (playerFacing + 2) % 8;
+	const [rdx, rdy] = FACING_DIRS[rightFacing];
+
+	let moved = false;
+
+	if (e.code === 'ArrowUp' || e.code === 'Numpad8' || e.code === 'KeyW') {
+		e.preventDefault();
+		playerMoveOrAttack(fdx, fdy);
+		moved = true;
+	} else if (e.code === 'ArrowDown' || e.code === 'Numpad2' || e.code === 'KeyS') {
+		e.preventDefault();
+		playerMoveOrAttack(-fdx, -fdy);
+		moved = true;
+	} else if (e.code === 'Numpad6' || e.code === 'KeyD') {
+		e.preventDefault();
+		playerMoveOrAttack(rdx, rdy);
+		moved = true;
+	} else if (e.code === 'Numpad4' || e.code === 'KeyA') {
+		e.preventDefault();
+		playerMoveOrAttack(-rdx, -rdy);
+		moved = true;
+	} else if (e.code === 'Numpad7') {
+		e.preventDefault();
+		const diagFacing = (playerFacing + 7) % 8;
+		const [ddx, ddy] = FACING_DIRS[diagFacing];
+		playerMoveOrAttack(ddx, ddy);
+		moved = true;
+	} else if (e.code === 'Numpad9') {
+		e.preventDefault();
+		const diagFacing = (playerFacing + 1) % 8;
+		const [ddx, ddy] = FACING_DIRS[diagFacing];
+		playerMoveOrAttack(ddx, ddy);
+		moved = true;
+	} else if (e.code === 'Numpad1') {
+		e.preventDefault();
+		const diagFacing = (playerFacing + 5) % 8;
+		const [ddx, ddy] = FACING_DIRS[diagFacing];
+		playerMoveOrAttack(ddx, ddy);
+		moved = true;
+	} else if (e.code === 'Numpad3') {
+		e.preventDefault();
+		const diagFacing = (playerFacing + 3) % 8;
+		const [ddx, ddy] = FACING_DIRS[diagFacing];
+		playerMoveOrAttack(ddx, ddy);
+		moved = true;
+	} else if (e.code === 'Numpad5') {
+		e.preventDefault();
+		moved = true;
+	} else if (e.code === 'ArrowLeft' || e.code === 'KeyQ') {
+		e.preventDefault();
+		playerFacing = (playerFacing + 7) % 8;
+		dirtyFov = true;
+		renderGame();
+		return;
+	} else if (e.code === 'ArrowRight' || e.code === 'KeyE') {
+		e.preventDefault();
+		playerFacing = (playerFacing + 1) % 8;
+		dirtyFov = true;
+		renderGame();
+		return;
+	}
+
+	if (moved) {
+		monstersAct();
+		checkLevelUp();
+		dirtyFov = true;
+		return;
+	}
+
+	const k = e.key.toLowerCase();
+	if (k === 'g') {
+		for (const obj of gameState.objects) {
+			if (obj.x === gameState.player.x && obj.y === gameState.player.y && obj.item) {
+				obj.item.pickUp();
+				monstersAct();
+				break;
+			}
+		}
+	} else if (k === 'i') {
+		showInventoryMenu('Use which item?', (item) => {
+			if (item && item.item) {
+				const result = item.item.use();
+				if (result !== 'pending') monstersAct();
+			}
+		});
+	} else if (k === 'd') {
+		showInventoryMenu('Drop which item?', (item) => {
+			if (item && item.item) {
+				item.item.drop();
+				monstersAct();
+			}
+		});
+	} else if (k === 'c') {
+		const gs = gameState;
+		const f = gs.player.fighter;
+		const needed = LEVEL_UP_BASE + gs.player.level * LEVEL_UP_FACTOR;
+		showMsgBox(
+			'CHARACTER\n\nLevel: ' + gs.player.level +
+			'\nXP: ' + f.xp + ' / ' + needed +
+			'\n\nMax HP: ' + f.maxHp +
+			'\nAttack: ' + f.power +
+			'\nDefense: ' + f.defense
+		);
+	} else if (k === '>') {
+		const gs = gameState;
+		if (gs.stairs && gs.stairs.x === gs.player.x && gs.stairs.y === gs.player.y) {
+			nextLevel();
+		} else {
+			msg('No stairs here.', '#888888');
+		}
+	}
+	renderGame();
+});
+
+document.addEventListener('keydown', (e) => {
+	if (overlay.style.display !== 'none' && inputMode === 'normal') {
+		if (e.key.toLowerCase() === 'n') startNewGame();
+	}
+}, true);
+
+loop();
+</script>
+</body>
+</html>
